@@ -1,10 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
-import { PrismaService } from 'src/prisma/prisma.service';
 import { ReserveSpotDto } from './dto/reserve-spot.sto';
-import { TicketKind, TicketStatus } from '@prisma/client';
-import { emit } from 'process';
+import { Prisma, TicketStatus } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class EventsService {
@@ -68,39 +67,54 @@ export class EventsService {
       throw new Error(`Spots ${notFoundSpotsName.join(', ')} not found`);
     }
 
-    await this.prismaService.reservationHistory.createMany({
-      data: spots.map((spot) => ({
-        spotId: spot.id,
-        ticketKind: dto.ticket_kind,
-        email: dto.email,
-        status: TicketStatus.reserved,
-      }))
-    })
-
-    await this.prismaService.spot.updateMany({
-      where: {
-        id: {
-          in: spots.map((spot) => spot.id)
-        }
-      },
-      data: {
-        status: TicketStatus.reserved
-      }
-    })
-
-    const tickets = await Promise.all(
-      spots.map((spot) => 
-        this.prismaService.ticket.create({
-          data: {
+    try {
+      const tickets = await this.prismaService.$transaction(async (prisma) => {
+        await prisma.reservationHistory.createMany({
+          data: spots.map((spot) => ({
             spotId: spot.id,
             ticketKind: dto.ticket_kind,
             email: dto.email,
+            status: TicketStatus.reserved,
+          }))
+        })
+    
+        await prisma.spot.updateMany({
+          where: {
+            id: {
+              in: spots.map((spot) => spot.id)
+            }
+          },
+          data: {
+            status: TicketStatus.reserved
           }
         })
-      )
-    )
-
-    return tickets;
-
+    
+        const tickets = await Promise.all(
+          spots.map((spot) => 
+            prisma.ticket.create({
+              data: {
+                spotId: spot.id,
+                ticketKind: dto.ticket_kind,
+                email: dto.email,
+              }
+            })
+          )
+        )
+    
+        return tickets;
+      }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted // This part ensures that querys within trasaction just get registers already commited, and don't get registers in transactions
+      })
+      return tickets;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        switch (error.code) {
+          case 'P2002': // unique contraint violation
+          case 'P2034': // transaction conflict
+            throw new Error('Some spots ate already reserved')
+        }
+      }
+      throw error
+    }
   }
 }

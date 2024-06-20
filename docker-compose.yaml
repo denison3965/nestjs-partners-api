@@ -3,12 +3,14 @@ services:
     build: .
     ports:
       - 3000:3000
+      - 3001:3001
     volumes:
     - ./:/home/node/app
   db:
     image: mysql
     environment:
       MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: nest
     ports:
       - 3306:3306
+    volumes:
+    - ./.docker/mysql:/docker-entrypoint-initdb.d # put query to run within container
